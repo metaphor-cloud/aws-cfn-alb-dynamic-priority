@@ -1,0 +1,125 @@
+name: Test Deployment
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY_ALIAS: metaphor
+  IMAGE_NAME: aws-cfn-alb-dynamic-priority
+  LB_STACK_NAME: alb-dynamic-priority-test-lb
+  EXAMPLE_STACK_NAME: alb-dynamic-priority-test-example
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: "true"
+          registry-type: private
+
+      - name: Build and push Lambda image for testing
+        id: build-image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:test-${{ github.sha }}
+
+      - name: Deploy stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.LB_STACK_NAME }} \
+            --template-file example.yml \
+            --parameter-overrides \
+              LambdaImageUri=${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:test-${{ github.sha }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Get Listener ARN and Load Balancer DNS
+        id: get-stack-outputs
+        run: |
+          LISTENER_ARN=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.LB_STACK_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='HttpListenerArn'].OutputValue" \
+            --output text)
+          echo "LISTENER_ARN=$LISTENER_ARN" >> $GITHUB_ENV
+          echo "listener_arn=$LISTENER_ARN" >> $GITHUB_OUTPUT
+          
+          LB_DNS=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.LB_STACK_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerDNS'].OutputValue" \
+            --output text)
+          echo "LB_DNS=$LB_DNS" >> $GITHUB_ENV
+          echo "lb_dns=$LB_DNS" >> $GITHUB_OUTPUT
+
+      - name: Wait for stack to be fully deployed
+        run: |
+          echo "Waiting for stack to be fully deployed..."
+          aws cloudformation wait stack-update-complete --stack-name ${{ env.LB_STACK_NAME }}
+
+      - name: Test endpoints
+        run: |
+          echo "Testing endpoint /0"
+          RESPONSE_0=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.LB_DNS }}/0)
+          if [ "$RESPONSE_0" != "200" ]; then
+            echo "Error: Expected status code 200 for /0, got $RESPONSE_0"
+            exit 1
+          fi
+          echo "Endpoint /0 returned status code $RESPONSE_0 as expected"
+          
+          echo "Testing endpoint /1"
+          RESPONSE_1=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.LB_DNS }}/1)
+          if [ "$RESPONSE_1" != "200" ]; then
+            echo "Error: Expected status code 200 for /1, got $RESPONSE_1"
+            exit 1
+          fi
+          echo "Endpoint /1 returned status code $RESPONSE_1 as expected"
+          
+          echo "Testing response body for /0"
+          BODY_0=$(curl -s http://${{ env.LB_DNS }}/0)
+          if [ "$BODY_0" != "Hello World" ]; then
+            echo "Error: Expected body 'Hello World' for /0, got '$BODY_0'"
+            exit 1
+          fi
+          echo "Endpoint /0 returned body '$BODY_0' as expected"
+          
+          echo "Testing response body for /1"
+          BODY_1=$(curl -s http://${{ env.LB_DNS }}/1)
+          if [ "$BODY_1" != "Hello World" ]; then
+            echo "Error: Expected body 'Hello World' for /1, got '$BODY_1'"
+            exit 1
+          fi
+          echo "Endpoint /1 returned body '$BODY_1' as expected"
+          
+          echo "All tests passed!"
+
+      - name: Delete stack
+        if: always()
+        run: |
+          echo "Deleting stack..."
+          aws cloudformation delete-stack --stack-name ${{ env.LB_STACK_NAME }}
+          aws cloudformation wait stack-delete-complete --stack-name ${{ env.LB_STACK_NAME }}
+          
+          echo "Stack deleted successfully"

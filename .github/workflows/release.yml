@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+
+env:
+  REGISTRY_ALIAS: metaphor
+  IMAGE_NAME: aws-cfn-alb-dynamic-priority
+  DOCKERFILE_PATH: Dockerfile
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: "true"
+          registry-type: public
+
+      - name: Build and push arm64 image
+        uses: docker/build-push-action@v5
+        with:
+          platforms: linux/arm64
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          provenance: false
+          tags: >-
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-${{ github.sha }},
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-${{ github.ref_name }},
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-latest
+          cache-from: type=gha,scope=arm64-${{ env.IMAGE_NAME }}
+          cache-to: ${{ format('type=gha,mode=max,scope=arm64-{0}', env.IMAGE_NAME)}}
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v5
+        with:
+          platforms: linux/amd64
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          provenance: false
+          tags: >-
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-${{ github.sha }},
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-${{ github.ref_name }},
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-latest
+          cache-from: type=gha,scope=amd64-${{ env.IMAGE_NAME }}
+          cache-to: ${{ format('type=gha,mode=max,scope=amd64-{0}', env.IMAGE_NAME)}}
+      
+      - name: Create manifest
+        run: |
+          docker manifest create ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-${{ github.sha }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-${{ github.sha }}
+          docker manifest annotate ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-${{ github.sha }} --os linux --arch arm64
+          docker manifest annotate ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-${{ github.sha }} --os linux --arch amd64
+          docker manifest push ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker manifest create ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-${{ github.ref_name }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-${{ github.ref_name }}
+          docker manifest annotate ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-${{ github.ref_name }} --os linux --arch arm64
+          docker manifest annotate ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-${{ github.ref_name }} --os linux --arch amd64
+          docker manifest push ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          docker manifest create ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-latest \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-latest
+          docker manifest annotate ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:arm64-latest --os linux --arch arm64
+          docker manifest annotate ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:amd64-latest --os linux --arch amd64
+          docker manifest push ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:latest
+
