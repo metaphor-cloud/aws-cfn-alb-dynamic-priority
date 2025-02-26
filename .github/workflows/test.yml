@@ -10,7 +10,6 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY_ALIAS: metaphor
   IMAGE_NAME: aws-cfn-alb-dynamic-priority
   LB_STACK_NAME: alb-dynamic-priority-test-lb
   EXAMPLE_STACK_NAME: alb-dynamic-priority-test-example
@@ -45,7 +44,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:test-${{ github.sha }}
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.IMAGE_NAME }}:test-${{ github.sha }}
 
       - name: Deploy stack
         run: |
@@ -53,7 +52,7 @@ jobs:
             --stack-name ${{ env.LB_STACK_NAME }} \
             --template-file example.yml \
             --parameter-overrides \
-              LambdaImageUri=${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY_ALIAS }}/${{ env.IMAGE_NAME }}:test-${{ github.sha }} \
+              LambdaImageUri=${{ steps.login-ecr.outputs.registry }}/${{ env.IMAGE_NAME }}:test-${{ github.sha }} \
             --capabilities CAPABILITY_IAM \
             --no-fail-on-empty-changeset
 
